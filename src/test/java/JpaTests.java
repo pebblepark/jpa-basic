@@ -12,6 +12,9 @@ import javax.persistence.EntityManager;
 import javax.persistence.EntityManagerFactory;
 import javax.persistence.EntityTransaction;
 import javax.persistence.Persistence;
+import javax.persistence.criteria.CriteriaBuilder;
+import javax.persistence.criteria.CriteriaQuery;
+import javax.persistence.criteria.Root;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
@@ -246,6 +249,123 @@ public class JpaTests {
     }
 
     @Test
+    public void criteria() {
+        Member member = new Member();
+        member.setName("test");
+        em.persist(member);
+
+        // Criteria 사용 준비
+        CriteriaBuilder cb = em.getCriteriaBuilder();
+        CriteriaQuery<Member> query = cb.createQuery(Member.class);
+
+        // 루트 클래스 (조회할 클래스)
+        Root<Member> m = query.from(Member.class);
+
+        // 쿼리 생성
+        CriteriaQuery<Member> cq = query.select(m).where(cb.equal(m.get("name"), "test"));
+        List<Member> members = em.createQuery(cq).getResultList();
+
+        System.out.println("member = " + members.get(0));
+    }
+
+    @Test
+    public void 네이티브_SQL() {
+        Member member = new Member();
+        member.setName("test");
+        em.persist(member);
+
+        List<Member> members = em.createNativeQuery("SELECT * FROM member WHERE name = 'test'", Member.class).getResultList();
+        System.out.println("member = " + members.get(0));
+    }
+
+    @Test
+    public void JPQL_조인() {
+        Team team = new Team();
+        team.setTeamName("team");
+        em.persist(team);
+        
+        Member member = new Member();
+        member.setName("test");
+        member.setTeam(team);
+        em.persist(member);
+        
+        // 내부 조인 = inner join
+        Member innerJoin = em.createQuery("select m from Member m join m.team", Member.class).getSingleResult();
+        System.out.println("innerJoin = " + innerJoin);
+        
+        // 외부 조인 = outer join
+        Member outerJoin = em.createQuery("select m from Member m left join m.team", Member.class).getSingleResult();
+        System.out.println("outerJoin = " + outerJoin);
+
+        // 세타 조인 -> cross join
+        long thetaJoin = em.createQuery("select count(m) from Member m, Team t", Long.class).getSingleResult();
+        System.out.println("thetaJoin = " + thetaJoin);
+    }
+
+    @Test
+    public void 사용자_정의_함수() {
+        Member member1 = new Member();
+        member1.setName("member1");
+        em.persist(member1);
+
+        Member member2 = new Member();
+        member2.setName("member2");
+        em.persist(member2);
+
+        String query = "select group_concat(m.name) from Member m";
+        //"select function('group_concat', m.name) from Member m";
+
+        List<String> result = em.createQuery(query, String.class).getResultList();
+        for (String s : result) {
+            System.out.println("s = " + s);
+        }
+    }
+
+    @Test
+    @DisplayName("경로표현식에는 상태필드, 단일 값 연관 필드, 컬렉션 값 연관 필드가 있다." +
+            "조인을 사용할 때에는 가급적 명시적 조인을 사용하자.")
+    public void 경로표현식() {
+        Team team = new Team();
+        team.setTeamName("team");
+        em.persist(team);
+
+        Member member1 = new Member();
+        member1.setName("member1");
+        member1.setTeam(team);
+        em.persist(member1);
+
+        Member member2 = new Member();
+        member2.setName("member2");
+        member2.setTeam(team);
+        em.persist(member2);
+
+        // 상태필드: 경로 탐색의 끝, 탐색 x - m.name
+        // 단일 값 연관 필드: 묵시적 내부 조인 발생(inner join), 탐색 o -> m.team
+        // 컬렉션 값 연관 필드: 묵시적 내부 조인 발생, 탐색 x (From 절에서 명시적 조인을 통해 별칭을 얻으면 별칭을 통해 탐색 가능) -> m.addresses
+
+        List<Member> implicitJoin = em.createQuery("select t.members from Team t").getResultList();  // 묵시적 조인, 내부 조인만 가능함
+        for (Member member : implicitJoin) {
+            System.out.println("joinedMember = " + member);
+        }
+
+        List<Member> explicitJoin = em.createQuery("select m from Member m join m.team", Member.class).getResultList(); // 명시적 조인
+        for (Member member : explicitJoin) {
+            System.out.println("joinedMember = " + member);
+        }
+
+        assertEquals(implicitJoin, explicitJoin);   // 묵시적 조인과 명시적 조인의 내부조인은 동일
+
+        assertThrows(Exception.class, () -> {
+            em.createQuery("select t.members.name from Team t").getResultList();    // 컬렉션은 경로 탐색의 끝, 명시적 조인을 통해 별칭을 얻어야 접근 가능
+        });
+
+        List<String> collectionExplicitJoin = em.createQuery("select m.name from Team t join t.members m", String.class).getResultList();   // 컬렉션에서 접근하려면 명시적 조인의 별칭으로 접근
+        for (String s : collectionExplicitJoin) {
+            System.out.println("name = " + s);
+        }
+    }
+    
+    @Test
     @DisplayName("패치 조인은 연관된 엔티티나 컬렉션을 SQL 한 번에 함께 조회가 가능하다")
     public void 패치조인() {
         Team_Member_엔티티_세팅();
@@ -361,7 +481,7 @@ public class JpaTests {
         // 영속성 컨텍스트 초기화 하지 않으면
         // 벌크 연산 하기 전에 들어있는 영속성 1차캐시의 값을 가져오기 때문에
         // member 의 name 이 업데이트 되지 않은 결과를 가져온다.
-        
+
         List<Member> members = em.createQuery("select m from Member m", Member.class)
                 .getResultList();
         for (Member member : members) {
